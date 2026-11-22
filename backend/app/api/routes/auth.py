@@ -75,7 +75,7 @@ def _issue_tokens(response: Response, user: User, settings: Settings) -> TokenOu
         path=REFRESH_COOKIE_PATH,
         httponly=True,
         secure=settings.cookie_secure,
-        samesite="lax",
+        samesite=settings.cookie_samesite,
     )
     return TokenOut(
         access_token=create_token(user.id, "access", settings),
@@ -163,7 +163,7 @@ def logout(
         path=REFRESH_COOKIE_PATH,
         httponly=True,
         secure=settings.cookie_secure,
-        samesite="lax",
+        samesite=settings.cookie_samesite,
     )
 
 

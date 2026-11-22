@@ -22,6 +22,8 @@ RUN uv sync --frozen --no-dev --no-install-project
 COPY alembic.ini ./
 COPY alembic ./alembic
 COPY app ./app
+# Zagon v produkciji (Render): migracije + Celery delavec + API v enem vsebniku.
+COPY --chmod=755 start-render.sh ./
 
 # Aplikacija ne teče kot root; datoteke ostanejo v lasti roota in so samo za branje.
 RUN useradd --system --no-create-home --uid 10001 app
