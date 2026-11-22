@@ -24,6 +24,7 @@ dependencies = [
 dev = [
     "fakeredis[lua]>=2.26",
     "pytest>=9.2.0",
+    "pytest-cov>=7.1.0",
     "ruff>=0.17.4",
 ]
 
