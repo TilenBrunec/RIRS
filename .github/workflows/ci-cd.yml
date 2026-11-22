@@ -1,0 +1,251 @@
+name: CI/CD
+
+on:
+  pull_request:
+    branches: [main]
+  push:
+    branches: [main]
+
+# Nov push v isti PR prekliče prejšnji zagon; zagonov na main ne prekinjamo (deploy).
+concurrency:
+  group: ci-cd-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+permissions:
+  contents: read
+
+env:
+  NODE_VERSION: "24"
+  # Naslov backenda, ki se ob gradnji vgradi v frontend (Settings → Variables → Actions).
+  NEXT_PUBLIC_API_URL: ${{ vars.PRODUCTION_API_URL || 'http://localhost:8989' }}
+
+jobs:
+  # ---------------------------------------------------------------- LINT
+  lint:
+    name: lint
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Namesti uv (s predpomnilnikom)
+        uses: astral-sh/setup-uv@v10.3.3
+        with:
+          enable-cache: true
+          cache-dependency-glob: backend/uv.lock
+
+      - name: Backend – Ruff (napake in slog)
+        working-directory: backend
+        run: |
+          uv sync --frozen
+          uv run ruff check --output-format=github .
+          uv run ruff format --check .
+
+      - uses: actions/setup-node@v7
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+
+      - name: Frontend – ESLint
+        working-directory: frontend
+        run: |
+          npm ci
+          npm run lint
+
+  # ---------------------------------------------------------------- BUILD
+  build:
+    name: build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+
+      # Frontend: prebuilt izhod za Vercel (.vercel/output); deploy ga samo naloži.
+      - uses: actions/setup-node@v7
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+
+      - name: Predpomnilnik gradnje Next.js
+        uses: actions/cache@v6
+        with:
+          path: frontend/.next/cache
+          key: nextjs-${{ runner.os }}-${{ hashFiles('frontend/package-lock.json') }}-${{ hashFiles('frontend/src/**') }}
+          restore-keys: |
+            nextjs-${{ runner.os }}-${{ hashFiles('frontend/package-lock.json') }}-
+
+      - name: Frontend – namestitev odvisnosti
+        working-directory: frontend
+        run: npm ci
+
+      - name: Frontend – gradnja (vercel build)
+        working-directory: frontend
+        run: |
+          mkdir -p .vercel
+          echo '{"projectId":"_","orgId":"_","settings":{"framework":"nextjs"}}' > .vercel/project.json
+          npx --yes vercel@50 build --prod --yes
+
+      - name: Frontend – artefakt
+        uses: actions/upload-artifact@v7
+        with:
+          name: frontend-build
+          path: frontend/.vercel/output
+          include-hidden-files: true
+          retention-days: 7
+
+      # Backend: Docker slika (sloji predpomnjeni v GitHub Actions cache), shranjena kot artefakt.
+      - uses: docker/setup-buildx-action@v4
+
+      - name: Backend – gradnja Docker slike
+        uses: docker/build-push-action@v7
+        with:
+          context: backend
+          tags: rirs-api:${{ github.sha }}
+          outputs: type=docker,dest=${{ runner.temp }}/rirs-api.tar
+          cache-from: type=gha,scope=backend
+          cache-to: type=gha,scope=backend,mode=max
+
+      - name: Backend – artefakt
+        uses: actions/upload-artifact@v7
+        with:
+          name: backend-image
+          path: ${{ runner.temp }}/rirs-api.tar
+          retention-days: 7
+
+  # ---------------------------------------------------------------- TEST
+  test:
+    name: test
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:17-alpine
+        env:
+          POSTGRES_USER: rift
+          POSTGRES_PASSWORD: rift-ci-geslo
+          POSTGRES_DB: rift_help_test
+        ports: ["5432:5432"]
+        options: >-
+          --health-cmd "pg_isready -U rift -d rift_help_test"
+          --health-interval 5s --health-timeout 3s --health-retries 10
+      redis:
+        image: redis:7-alpine
+        ports: ["6379:6379"]
+        options: >-
+          --health-cmd "redis-cli ping"
+          --health-interval 5s --health-timeout 3s --health-retries 10
+    env:
+      TEST_DATABASE_URL: postgresql+psycopg://rift:rift-ci-geslo@127.0.0.1:5432/rift_help_test
+      TEST_REDIS_URL: redis://127.0.0.1:6379/0
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: astral-sh/setup-uv@v10.3.3
+        with:
+          enable-cache: true
+          cache-dependency-glob: backend/uv.lock
+
+      - name: Backend – migracije testne baze
+        working-directory: backend
+        env:
+          DATABASE_URL: ${{ env.TEST_DATABASE_URL }}
+        run: |
+          uv sync --frozen
+          uv run alembic upgrade head
+
+      - name: Backend – pytest s pokritostjo
+        working-directory: backend
+        run: >-
+          uv run pytest
+          --cov=app --cov-report=term --cov-report=xml --cov-report=html
+          --junitxml=test-results/junit.xml
+
+      - uses: actions/setup-node@v7
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+
+      - name: Frontend – Vitest s pokritostjo
+        working-directory: frontend
+        run: |
+          npm ci
+          npm run test:coverage
+
+      - name: Poročila o pokritosti in testih
+        if: ${{ !cancelled() }}
+        uses: actions/upload-artifact@v7
+        with:
+          name: coverage-reports
+          path: |
+            backend/coverage.xml
+            backend/htmlcov/
+            backend/test-results/
+            frontend/coverage/
+            frontend/test-results/
+          retention-days: 14
+
+  # ---------------------------------------------------------------- DEPLOY
+  deploy:
+    name: deploy
+    needs: [lint, build, test]
+    if: ${{ github.event_name == 'push' && github.ref == 'refs/heads/main' }}
+    runs-on: ubuntu-latest
+    environment:
+      name: production
+      url: ${{ vars.PRODUCTION_FRONTEND_URL }}
+    permissions:
+      contents: read
+      packages: write  # objava slike v GitHub Container Registry
+    concurrency:
+      group: deploy-production
+      cancel-in-progress: false
+    steps:
+      - name: Prenos artefaktov iz joba build
+        uses: actions/download-artifact@v8
+        with:
+          path: artifacts
+
+      # --- Backend: slika iz build → GHCR → Render (deploy hook z imgURL)
+      - name: Backend – objava slike v GHCR
+        id: image
+        run: |
+          docker load --input artifacts/backend-image/rirs-api.tar
+          image="ghcr.io/${GITHUB_REPOSITORY_OWNER,,}/rirs-api"
+          echo "${{ secrets.GITHUB_TOKEN }}" | docker login ghcr.io -u "${{ github.actor }}" --password-stdin
+          for tag in "${GITHUB_SHA}" latest; do
+            docker tag "rirs-api:${GITHUB_SHA}" "${image}:${tag}"
+            docker push "${image}:${tag}"
+          done
+          echo "ref=${image}:${GITHUB_SHA}" >> "$GITHUB_OUTPUT"
+
+      - name: Backend – namestitev na Render
+        env:
+          RENDER_DEPLOY_HOOK_URL: ${{ secrets.RENDER_DEPLOY_HOOK_URL }}
+          IMAGE: ${{ steps.image.outputs.ref }}
+        run: |
+          curl --fail-with-body -sS -X POST -G "$RENDER_DEPLOY_HOOK_URL" --data-urlencode "imgURL=${IMAGE}"
+
+      # --- Frontend: prebuilt izhod iz build → Vercel (brez ponovne gradnje)
+      - name: Frontend – namestitev na Vercel
+        env:
+          VERCEL_TOKEN: ${{ secrets.VERCEL_TOKEN }}
+          VERCEL_ORG_ID: ${{ secrets.VERCEL_ORG_ID }}
+          VERCEL_PROJECT_ID: ${{ secrets.VERCEL_PROJECT_ID }}
+        run: |
+          mkdir -p site/.vercel/output
+          cp -r artifacts/frontend-build/. site/.vercel/output/
+          cd site
+          npx --yes vercel@50 deploy --prebuilt --prod --token="$VERCEL_TOKEN"
+
+      # --- Preveri, da je aplikacija dejansko dostopna (Render potrebuje nekaj minut).
+      - name: Preverjanje namestitve
+        env:
+          API_URL: ${{ vars.PRODUCTION_API_URL }}
+          FRONTEND_URL: ${{ vars.PRODUCTION_FRONTEND_URL }}
+        run: |
+          for i in $(seq 1 40); do
+            if curl -fsS "$API_URL/health" | grep -q '"ok"'; then echo "API dosegljiv"; break; fi
+            [ "$i" = 40 ] && { echo "API ni dosegljiv"; exit 1; }
+            sleep 15
+          done
+          curl -fsS -o /dev/null -w "Frontend: HTTP %{http_code}\n" "$FRONTEND_URL"
