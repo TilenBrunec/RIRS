@@ -85,12 +85,22 @@ jobs:
           echo '{"projectId":"_","orgId":"_","settings":{"framework":"nextjs"}}' > .vercel/project.json
           npx --yes vercel@50 build --prod --yes
 
+      # Funkcije v .vercel/output se sklicujejo na datoteke iz node_modules (filePathMap) in
+      # vsebujejo simbolne povezave, ki jih upload-artifact ne ohrani. Zato zapakiramo izhod in
+      # samo navedene datoteke v en arhiv.
+      - name: Frontend – paket za namestitev
+        working-directory: frontend
+        run: |
+          find .vercel/output/functions -name .vc-config.json \
+            -exec jq -r '.filePathMap | select(. != null) | .[]' {} + | sort -u > "$RUNNER_TEMP/files.txt"
+          tar -czf "$RUNNER_TEMP/frontend-build.tgz" .vercel/output -T "$RUNNER_TEMP/files.txt"
+          echo "Datotek iz filePathMap: $(wc -l < "$RUNNER_TEMP/files.txt")"
+
       - name: Frontend – artefakt
         uses: actions/upload-artifact@v7
         with:
           name: frontend-build
-          path: frontend/.vercel/output
-          include-hidden-files: true
+          path: ${{ runner.temp }}/frontend-build.tgz
           retention-days: 7
 
       # Backend: Docker slika (sloji predpomnjeni v GitHub Actions cache), shranjena kot artefakt.
@@ -232,8 +242,8 @@ jobs:
           VERCEL_ORG_ID: ${{ secrets.VERCEL_ORG_ID }}
           VERCEL_PROJECT_ID: ${{ secrets.VERCEL_PROJECT_ID }}
         run: |
-          mkdir -p site/.vercel/output
-          cp -r artifacts/frontend-build/. site/.vercel/output/
+          mkdir site
+          tar -xzf artifacts/frontend-build/frontend-build.tgz -C site
           cd site
           npx --yes vercel@50 deploy --prebuilt --prod --token="$VERCEL_TOKEN"
 
