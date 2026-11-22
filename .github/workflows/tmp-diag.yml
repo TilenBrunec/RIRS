@@ -1,0 +1,17 @@
+name: tmp-diag
+on: pull_request
+jobs:
+  diag:
+    runs-on: ubuntu-latest
+    environment: production
+    env:
+      T: ${{ secrets.VERCEL_TOKEN }}
+      O: ${{ secrets.VERCEL_ORG_ID }}
+      P: ${{ secrets.VERCEL_PROJECT_ID }}
+    steps:
+      - run: |
+          echo "dolzine: token=${#T} org=${#O} project=${#P}"
+          printf '%s' "$T" | grep -q '[[:space:]]' && echo "TOKEN VSEBUJE PRESLEDEK/NOVO VRSTICO" || true
+          echo "--- user"; curl -s -H "Authorization: Bearer $T" https://api.vercel.com/v2/user | jq -c '{error, user: (.user|{username}?)}'
+          echo "--- teams"; curl -s -H "Authorization: Bearer $T" https://api.vercel.com/v2/teams | jq -c '{error, teams: [.teams[]?.id]}'
+          echo "--- project"; curl -s -H "Authorization: Bearer $T" "https://api.vercel.com/v9/projects/$P?teamId=$O" | jq -c '{error, name}'
