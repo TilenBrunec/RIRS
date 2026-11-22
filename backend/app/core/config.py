@@ -30,6 +30,9 @@ class Settings(BaseSettings):
     refresh_token_days: int = 14
     # V produkciji (HTTPS) mora biti True, da piškotek ne potuje po HTTP.
     cookie_secure: bool = False
+    # "none", kadar sta frontend in API na različnih domenah (npr. Vercel + Render);
+    # brskalnik takrat zahteva tudi cookie_secure=True.
+    cookie_samesite: Literal["lax", "strict", "none"] = "lax"
 
     # Zbiralnik tekem (US-07): challenger igralci ene platforme, omejeno na zagon, da en
     # zagon z razvojnim ključem (100 klicev / 2 min) traja nekaj minut, ne ur.

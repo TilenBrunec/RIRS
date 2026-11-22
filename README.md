@@ -1,5 +1,9 @@
 # RIFT_HELP
 
+[![CI/CD](https://github.com/TilenBrunec/RIRS/actions/workflows/ci-cd.yml/badge.svg?branch=main)](https://github.com/TilenBrunec/RIRS/actions/workflows/ci-cd.yml)
+
+**Nameščena aplikacija:** <https://rirs-tilen.vercel.app> · API: <https://rirs-api.onrender.com/docs>
+
 Taktični pomočnik za League of Legends. Na podlagi aktivne tekme in zgodovine nasprotnikov predlaga build, rune in okna za boj (power spike), ter pokaže profil igralnega sloga nasprotnikov.
 
 Podatki izključno iz uradnega **Riot Games API** in **Data Dragon**.
@@ -182,7 +186,50 @@ cp .env.example .env.local    # naslov backend API
 npm install
 npm run dev                   # http://localhost:3000
 npm run lint
+npm run test:coverage         # Vitest + poročilo pokritosti v coverage/
 ```
+
+## CI/CD (GitHub Actions)
+
+Cevovod [`.github/workflows/ci-cd.yml`](.github/workflows/ci-cd.yml) se zažene ob vsakem pull
+requestu v `main` in ob vsakem pushu na `main`. Joba `lint`, `build` in `test` tečejo vzporedno,
+`deploy` pa samo ob pushu na `main` in samo, če so vsi trije uspešni.
+
+| Faza | Kaj naredi |
+|---|---|
+| `lint` | Backend: `ruff check` in `ruff format --check`. Frontend: ESLint (`--max-warnings=0`). Vsaka napaka podre job. |
+| `build` | Frontend: `vercel build` (Next.js) → artefakt `frontend-build`. Backend: Docker slika → artefakt `backend-image`. Predpomnjeni so npm, `.next/cache` in sloji Docker slike (GitHub Actions cache). |
+| `test` | Backend: pytest (enotski testi in testi API na pravi bazi PostgreSQL in Redis kot servisnih vsebnikih). Frontend: Vitest. Poročila o pokritosti (`htmlcov/`, `coverage.xml`, `frontend/coverage/`) in JUnit → artefakt `coverage-reports`. Predpomnjen je uv cache. |
+| `deploy` | Okolje `production`. Sliko iz `build` objavi v GHCR in sproži Render deploy hook (`imgURL`), prebuilt frontend iz `build` naloži na Vercel (`vercel deploy --prebuilt`), nato preveri `/health` in frontend. Aplikacija se ne gradi ponovno. |
+
+Veja `main` je zaščitena: spremembe gredo prek pull requestov, joba `lint`, `build` in `test`
+morajo uspeti pred združitvijo.
+
+### Nastavitev namestitve
+
+**Render** (backend, brezplačno):
+
+1. Ustvari *PostgreSQL* in *Key Value* (Redis) bazo.
+2. Ustvari *Web Service* → *Existing image* → `ghcr.io/<uporabnik>/rirs-api:latest` (paket v GHCR
+   nastavi na javen ali v Render dodaj registry credential). *Docker Command*: `./start-render.sh`
+   (migracije + Celery delavec + API v enem vsebniku).
+3. Okoljske spremenljivke: `DATABASE_URL` (Internal URL baze), `REDIS_URL` (Internal URL Key
+   Value), `JWT_SECRET`, `COOKIE_SECURE=true`, `COOKIE_SAMESITE=none`,
+   `CORS_ORIGINS=["https://<frontend>.vercel.app"]`, `RIOT_API_MODE=fixtures`.
+4. *Settings → Deploy Hook* → kopiraj URL.
+
+**Vercel** (frontend): ustvari projekt (framework Next.js, brez povezave na Git), v
+*Account Settings → Tokens* ustvari žeton; `orgId` in `projectId` sta v *Project Settings*.
+
+**GitHub** (`Settings`):
+
+- *Environments → production → secrets*: `RENDER_DEPLOY_HOOK_URL`, `VERCEL_TOKEN`,
+  `VERCEL_ORG_ID`, `VERCEL_PROJECT_ID`.
+- *Secrets and variables → Actions → Variables*: `PRODUCTION_API_URL` (npr.
+  `https://rirs-api.onrender.com`, vgradi se v frontend ob gradnji) in `PRODUCTION_FRONTEND_URL`.
+
+Šampione in predmete iz Data Dragon uvozi `start-render.sh` ob vsakem zagonu (uvoz je
+idempotenten), zato lupina na Render ni potrebna.
 
 ## Razvojni proces
 

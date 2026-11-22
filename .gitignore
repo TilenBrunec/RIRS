@@ -50,3 +50,11 @@ github.txt
 
 # Next.js samodejno generira
 frontend/AGENTS.md
+
+# Vercel (prebuilt izhod v CI)
+.vercel/
+
+# Poročila testov (CI)
+backend/coverage.xml
+backend/htmlcov/
+.coverage
