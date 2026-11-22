@@ -1,0 +1,17 @@
+name: tmp-diag
+on: pull_request
+jobs:
+  diag:
+    runs-on: ubuntu-latest
+    environment: production
+    env:
+      T: ${{ secrets.VERCEL_TOKEN }}
+      O: ${{ secrets.VERCEL_ORG_ID }}
+      P: ${{ secrets.VERCEL_PROJECT_ID }}
+    steps:
+      - run: |
+          echo "dolzine: token=${#T} org=${#O} project=${#P}"
+          for u in "v2/user" "teams/$O" "v9/projects/$P?teamId=$O"; do
+            code=$(curl -s -o /tmp/r.json -w '%{http_code}' -H "Authorization: Bearer $T" "https://api.vercel.com/$u")
+            echo "REZ ${u%%\?*} -> $code $(jq -c '.error // {ok: true}' /tmp/r.json)"
+          done
